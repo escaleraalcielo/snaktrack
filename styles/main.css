@@ -754,6 +754,35 @@ h1 {
   text-transform: uppercase;
 }
 
+.sort-header-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-weight: 700;
+  gap: var(--space-2xs);
+  padding: 0;
+  text-transform: uppercase;
+}
+
+.sort-header-button:hover,
+.sort-header-button:focus-visible {
+  color: var(--company);
+  outline: 2px solid var(--company);
+  outline-offset: 2px;
+}
+
+.sort-header-button.is-active {
+  color: var(--company);
+}
+
+.sort-indicator {
+  font-size: 0.85em;
+}
+
 .pagination-button {
   background:
     linear-gradient(180deg, oklch(0.74 0.045 250), var(--company-plate));
@@ -871,6 +900,16 @@ h1 {
 
 .request-note strong {
   color: var(--ink);
+}
+
+.request-empty-cell {
+  padding: var(--space-sm);
+}
+
+.search-hit {
+  background: var(--warning);
+  color: var(--ink);
+  padding: 0 1px;
 }
 
 .status-badge {

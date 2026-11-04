@@ -125,14 +125,17 @@ export const identityCopy = Object.freeze({
       return `${request.snack} rejected for ${request.requester}. Snack exposure remains unowned. We love you.`;
     },
     notFound: "Snack request could not be located in the liability register. We love to listen.",
-    missingStartDate(request) {
-      return `${request.requester} does not have a snack tenure record for ${request.snack}. You matter here.`;
-    },
-    budgetOverride(request, budget, overage) {
+    overLimit(request, limit) {
       return (
-        `BUDGET VARIANCE REQUIRED ${request.snack} exceeds ${request.requester} ` +
-        `snack budget of ${formatMoney(budget)} by ${formatMoney(overage)}. ` +
-        `Our commitment to you is ongoing.`
+        `${request.snack} for ${request.requester} costs ${formatMoney(request.itemCost)}, ` +
+        `above the ${formatMoney(limit)} limit in force that day. ` +
+        `Anything more would be taking advantage of our love for you.`
+      );
+    },
+    weeklyLimit(request) {
+      return (
+        `${request.requester} already has an approved snack this week. ` +
+        `Sharing is one of our core values. One snack per week, always with love.`
       );
     },
   }),
@@ -162,6 +165,20 @@ export const identityCopy = Object.freeze({
       return `Showing filings ${start}-${end} of ${total}.`;
     },
   }),
+  search: Object.freeze({
+    title: "Search Snack Queue",
+    label: "Find in queue",
+    placeholder: "Requester, request ID, snack, department, or a word from the notes",
+    clearAction: "Clear Search",
+    countLabel(count) {
+      return count === 1 ? "1 matching filing" : `${count} matching filings`;
+    },
+    sortHint: "Retail Price sortable - activate the header to reorder.",
+    emptyTitle: "No snack filings match your search.",
+    emptyContext(term) {
+      return `Nothing in the liability register matches "${term}". Clear the search to restore the full queue.`;
+    },
+  }),
   reviewModal: Object.freeze({
     eyebrow: "Snack Request Review",
     title(request) {
@@ -176,7 +193,6 @@ export const identityCopy = Object.freeze({
       itemCost: "Retail Price",
       status: "Current Status",
       requestedAt: "Requested Date",
-      tenure: "Employee Tenure",
       notes: "Notes",
     }),
   }),

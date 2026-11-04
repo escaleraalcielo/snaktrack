@@ -1,9 +1,6 @@
 import dashboardTemplate from "../templates/snack-dashboard.html?raw";
 import { identityCopy as defaultIdentity } from "../config/identity.config.js";
-import {
-  approveSnackRequest,
-  getEmployeeTenureAtRequest,
-} from "../services/approval-rules.service.js";
+import { approveSnackRequest } from "../services/approval-rules.service.js";
 import {
   formatRequestAge,
   LOCAL_DEMO_REQUEST_DATE,
@@ -12,6 +9,9 @@ import {
 const PAGE_SIZE = 50;
 const REQUESTER_PRICE_CAP = 30;
 const URL_STATUS_FILTERS = new Set(["pending", "approved", "rejected"]);
+// Fields a person would actually type. Deliberately excludes status/date (they have
+// their own controls) and avoids blind-matching the whole record.
+const SEARCH_FIELDS = Object.freeze(["id", "requester", "snack", "department", "notes"]);
 const ACTING_USERS = Object.freeze({
   administrator: "ADMINISTRATOR",
   sampleEmployee: "SAMPLE EMPLOYEE",
@@ -31,6 +31,10 @@ export function createSnackDashboard({ root, snackRequestsService, identity = de
   };
   let activeReviewRequestId = null;
   let shouldFocusReviewModal = false;
+  let searchTerm = "";
+  let searchSort = null; // null | "asc" | "desc" — retail-price ordering
+  let shouldFocusSearch = false;
+  let searchCaret = null;
   let today = todayDefault();
 
   function todayDefault() {
@@ -69,16 +73,61 @@ export function createSnackDashboard({ root, snackRequestsService, identity = de
       (request) => request.requestedAt.slice(0, 10) <= today,
     );
     const statusFilter = getStatusFilterFromUrl();
+    const statusScoped = applyStatusFilter(asOfRequests, statusFilter);
+    const searched = applySearch(statusScoped);
 
+    return applyRetailPriceSort(searched);
+  }
+
+  function applyStatusFilter(requests, statusFilter) {
     if (statusFilter === null) {
-      return asOfRequests;
+      return requests;
     }
 
     if (!URL_STATUS_FILTERS.has(statusFilter)) {
       return [];
     }
 
-    return asOfRequests.filter((request) => request.status === statusFilter);
+    return requests.filter((request) => request.status === statusFilter);
+  }
+
+  function applySearch(requests) {
+    const query = normalizeForSearch(searchTerm);
+
+    if (!query) {
+      return requests;
+    }
+
+    // Derived view only — `requests` is already a fresh copy from the service,
+    // so the underlying 1,200-row list is never touched.
+    return requests.filter((request) =>
+      SEARCH_FIELDS.some((field) => normalizeForSearch(request[field]).includes(query)),
+    );
+  }
+
+  function applyRetailPriceSort(requests) {
+    if (!searchSort) {
+      return requests;
+    }
+
+    const direction = searchSort === "asc" ? 1 : -1;
+
+    return requests
+      .slice()
+      .sort((left, right) => (Number(left.itemCost) - Number(right.itemCost)) * direction);
+  }
+
+  // Lowercase, collapse internal runs of whitespace, and trim, so a stray capital
+  // or an extra space never breaks a match.
+  function normalizeForSearch(value) {
+    return String(value ?? "")
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function isSearchActive() {
+    return normalizeForSearch(searchTerm).length > 0;
   }
 
   function getStatusFilterFromUrl() {
@@ -111,10 +160,13 @@ export function createSnackDashboard({ root, snackRequestsService, identity = de
     bindActingUserButtons();
     bindActingUserDateOverride();
     bindRequestForm();
+    bindSearchControls();
+    bindSortHeader();
     bindPaginationButtons();
     bindReviewButtons();
     bindReviewModalButtons();
     focusReviewModalIfRequested();
+    focusSearchIfRequested();
   }
 
   function getSummaryStatusCounts() {
@@ -133,6 +185,11 @@ export function createSnackDashboard({ root, snackRequestsService, identity = de
     setText("[data-table-caption]", identity.dashboard.tableCaption);
 
     Object.entries(identity.tableHeaders).forEach(([key, label]) => {
+      if (key === "itemCost") {
+        renderSortableHeader(label);
+        return;
+      }
+
       setText(`[data-table-header="${key}"]`, label);
     });
 
@@ -151,6 +208,31 @@ export function createSnackDashboard({ root, snackRequestsService, identity = de
     appendTextWithOptionalLineBreak(listItem, item.text, item.lineBreakAfter);
 
     return listItem;
+  }
+
+  function renderSortableHeader(label) {
+    const header = root.querySelector('[data-table-header="itemCost"]');
+
+    if (!header) {
+      return;
+    }
+
+    const ariaSort =
+      searchSort === "asc" ? "ascending" : searchSort === "desc" ? "descending" : "none";
+    const indicator = searchSort === "asc" ? "▲" : searchSort === "desc" ? "▼" : "⇅";
+
+    header.setAttribute("aria-sort", ariaSort);
+    header.innerHTML = `
+      <button
+        class="sort-header-button ${searchSort ? "is-active" : ""}"
+        type="button"
+        data-sort="itemCost"
+        title="${escapeHtml(identity.search.sortHint)}"
+      >
+        <span>${escapeHtml(label)}</span>
+        <span class="sort-indicator" aria-hidden="true">${indicator}</span>
+      </button>
+    `;
   }
 
   function renderNotice(noticeNode) {
@@ -185,8 +267,40 @@ export function createSnackDashboard({ root, snackRequestsService, identity = de
 
     workflowNode.hidden = false;
     renderSummary(workflowNode.querySelector("[data-summary]"), statusCounts);
+    renderRequestControls(workflowNode.querySelector("[data-request-controls]"), requestPage);
     renderPagination(workflowNode.querySelector("[data-pagination]"), requestPage);
     renderRequestRows(workflowNode.querySelector("[data-request-list]"), requestPage.visibleRequests);
+  }
+
+  function renderRequestControls(controlsNode, requestPage) {
+    if (!controlsNode) {
+      return;
+    }
+
+    const matchCount = requestPage.totalRequests;
+
+    controlsNode.innerHTML = `
+      <p class="filter-box-title">${identity.search.title}</p>
+      <div class="search-holder">
+        <label>
+          <span>${identity.search.label}</span>
+          <input
+            type="search"
+            data-search-input
+            autocomplete="off"
+            placeholder="${escapeHtml(identity.search.placeholder)}"
+            value="${escapeHtml(searchTerm)}"
+          />
+        </label>
+        <button
+          class="pagination-button"
+          type="button"
+          data-search-clear
+          ${isSearchActive() ? "" : "disabled"}
+        >${identity.search.clearAction}</button>
+        <span class="filter-count" aria-label="${escapeHtml(identity.search.countLabel(matchCount))}">${matchCount}</span>
+      </div>
+    `;
   }
 
   function renderActingUserSwitch(actingUserNode) {
@@ -396,23 +510,48 @@ export function createSnackDashboard({ root, snackRequestsService, identity = de
   }
 
   function renderRequestRows(listNode, requests) {
+    if (requests.length === 0) {
+      listNode.innerHTML = renderRequestRowsEmpty();
+      return;
+    }
+
     listNode.innerHTML = requests.map(renderRequestRow).join("");
+  }
+
+  function renderRequestRowsEmpty() {
+    // Reuse the app's own empty-results treatment (see requester history).
+    const context = isSearchActive()
+      ? identity.search.emptyContext(searchTerm.trim())
+      : identity.pagination.empty;
+
+    return `
+      <tr>
+        <td colspan="7" class="request-empty-cell">
+          <div class="employee-requests-empty">
+            <strong>${escapeHtml(identity.search.emptyTitle)}</strong>
+            <span>${escapeHtml(context)}</span>
+          </div>
+        </td>
+      </tr>
+    `;
   }
 
   function renderRequestRow(request) {
     const actionMarkup = renderActionMarkup(request);
     const status = escapeHtml(request.status);
 
+    const notesMarkup = request.notes
+      ? highlightMatch(request.notes)
+      : escapeHtml(identity.rowCopy.noNotes);
+
     return `
       <tr>
         <th scope="row">
-          <span class="request-id">${escapeHtml(request.id)}</span>
-          <span class="request-note"><strong>${identity.rowCopy.noteLabel}:</strong> ${
-            escapeHtml(request.notes || identity.rowCopy.noNotes)
-          }</span>
+          <span class="request-id">${highlightMatch(request.id)}</span>
+          <span class="request-note"><strong>${identity.rowCopy.noteLabel}:</strong> ${notesMarkup}</span>
         </th>
-        <td>${escapeHtml(request.requester)}</td>
-        <td>${escapeHtml(request.snack)}</td>
+        <td>${highlightMatch(request.requester)}</td>
+        <td>${highlightMatch(request.snack)}</td>
         <td>${formatCurrency(request.itemCost)}</td>
         <td><span class="status-badge status-${status}">${formatStatus(request.status)}</span></td>
         <td>
@@ -422,6 +561,32 @@ export function createSnackDashboard({ root, snackRequestsService, identity = de
         <td>${actionMarkup}</td>
       </tr>
     `;
+  }
+
+  // Escape first, then wrap literal query occurrences in <mark>. Both sides are
+  // HTML-escaped before matching, so the output stays injection-safe.
+  function highlightMatch(rawValue) {
+    const escaped = escapeHtml(rawValue);
+    const query = searchTerm.trim();
+
+    if (!query) {
+      return escaped;
+    }
+
+    // Escape regex specials, then let any whitespace run in the query match any
+    // whitespace run in the text — so highlighting stays consistent with matching.
+    const pattern = escapeHtml(query)
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      .replace(/\s+/g, "\\s+");
+
+    if (!pattern) {
+      return escaped;
+    }
+
+    return escaped.replace(
+      new RegExp(`(${pattern})`, "gi"),
+      '<mark class="search-hit">$1</mark>',
+    );
   }
 
   function renderActionMarkup(request) {
@@ -458,8 +623,6 @@ export function createSnackDashboard({ root, snackRequestsService, identity = de
       return;
     }
 
-    const tenure = getEmployeeTenureAtRequest(request);
-
     modalNode.hidden = false;
     modalNode.innerHTML = `
       <div class="review-modal-backdrop" data-review-close></div>
@@ -483,7 +646,6 @@ export function createSnackDashboard({ root, snackRequestsService, identity = de
               ${renderReviewDetail(identity.reviewModal.fields.itemCost, formatCurrency(request.itemCost))}
               ${renderReviewDetail(identity.reviewModal.fields.status, formatStatus(request.status))}
               ${renderReviewDetail(identity.reviewModal.fields.requestedAt, request.requestedAt)}
-              ${renderReviewDetail(identity.reviewModal.fields.tenure, tenure.label)}
               ${renderReviewDetail(
                 identity.reviewModal.fields.notes,
                 request.notes || identity.rowCopy.noNotes,
@@ -520,6 +682,9 @@ export function createSnackDashboard({ root, snackRequestsService, identity = de
         };
         activeReviewRequestId = null;
         shouldFocusReviewModal = false;
+        searchTerm = "";
+        searchSort = null;
+        searchCaret = null;
         currentPage = 1;
         notice =
           actingUser === ACTING_USERS.sampleEmployee
@@ -607,6 +772,73 @@ export function createSnackDashboard({ root, snackRequestsService, identity = de
     });
   }
 
+  function bindSearchControls() {
+    const input = root.querySelector("[data-search-input]");
+
+    if (input) {
+      input.addEventListener("input", (event) => {
+        searchTerm = event.currentTarget.value;
+        searchCaret = event.currentTarget.selectionStart;
+        currentPage = 1;
+        activeReviewRequestId = null;
+        shouldFocusReviewModal = false;
+        shouldFocusSearch = true;
+        renderDashboard();
+      });
+    }
+
+    const clearButton = root.querySelector("[data-search-clear]");
+
+    if (clearButton) {
+      clearButton.addEventListener("click", () => {
+        searchTerm = "";
+        searchCaret = null;
+        currentPage = 1;
+        activeReviewRequestId = null;
+        shouldFocusReviewModal = false;
+        shouldFocusSearch = true;
+        renderDashboard();
+      });
+    }
+  }
+
+  function bindSortHeader() {
+    const sortButton = root.querySelector("[data-sort='itemCost']");
+
+    if (!sortButton) {
+      return;
+    }
+
+    sortButton.addEventListener("click", () => {
+      // Cycle: unsorted -> ascending -> descending -> unsorted.
+      searchSort = searchSort === "asc" ? "desc" : searchSort === "desc" ? null : "asc";
+      currentPage = 1;
+      activeReviewRequestId = null;
+      shouldFocusReviewModal = false;
+      renderDashboard();
+    });
+  }
+
+  function focusSearchIfRequested() {
+    if (!shouldFocusSearch) {
+      return;
+    }
+
+    shouldFocusSearch = false;
+
+    const input = root.querySelector("[data-search-input]");
+
+    if (!input) {
+      return;
+    }
+
+    input.focus({ preventScroll: true });
+
+    const caret = searchCaret == null ? input.value.length : Math.min(searchCaret, input.value.length);
+
+    input.setSelectionRange(caret, caret);
+  }
+
   function bindPaginationButtons() {
     root.querySelectorAll("[data-pagination-action]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -654,16 +886,28 @@ export function createSnackDashboard({ root, snackRequestsService, identity = de
     if (approveButton) {
       approveButton.addEventListener("click", () => {
         const request = snackRequestsService.getRequestById(activeReviewRequestId);
-        const result = approveSnackRequest(request);
+        // Evaluate the memo as of the acting "effective snack date" so the rule
+        // can be pointed at any day, and pass the full queue so the one-per-week
+        // rule can see the requester's other approved snacks.
+        const result = approveSnackRequest(request, {
+          asOfDate: today,
+          priorRequests: snackRequestsService.getRequests(),
+        });
+
+        activeReviewRequestId = null;
+        shouldFocusReviewModal = false;
 
         if (result.ok) {
           snackRequestsService.updateRequestStatus(request.id, result.status);
-          activeReviewRequestId = null;
-          shouldFocusReviewModal = false;
           notice = { tone: "success", text: result.message };
-          renderDashboard();
-          focusAfterReviewClose(request.id);
+        } else {
+          // The request stays pending; surface *why* instead of silently doing
+          // nothing (the old over-budget path vanished with no explanation).
+          notice = { tone: "warning", text: result.message };
         }
+
+        renderDashboard();
+        focusAfterReviewClose(request.id);
       });
     }
 
